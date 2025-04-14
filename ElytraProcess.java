@@ -131,14 +131,6 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         }
 
         boolean safetyLanding = false;
-        if (ctx.player().isFallFlying() && shouldLandForSafety()) {
-            if (Baritone.settings().elytraAllowEmergencyLand.value) {
-                logDirect("Emergency landing - almost out of elytra durability or fireworks");
-                safetyLanding = true;
-            } else {
-                logDirect("almost out of elytra durability or fireworks, but I'm going to continue since elytraAllowEmergencyLand is false");
-            }
-        }
         if (ctx.player().isFallFlying() && this.state != State.LANDING && (this.behavior.pathManager.isComplete() || safetyLanding)) {
             final BetterBlockPos last = this.behavior.pathManager.path.getLast();
             if (last != null && (ctx.player().position().distanceToSqr(last.getCenter()) < (48 * 48) || safetyLanding) && (!goingToLandingSpot || (safetyLanding && this.landingSpot == null))) {
@@ -179,7 +171,10 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                 Vec3 to = new Vec3(((double) endPos.x) + 0.5, from.y, ((double) endPos.z) + 0.5);
                 Rotation rotation = RotationUtils.calcRotationFromVec3d(from, to, ctx.playerRotations());
                 baritone.getLookBehavior().updateTarget(new Rotation(rotation.getYaw(), 0), false); // this will be overwritten, probably, by behavior tick
-
+// 🔽 Add this check right here:
+                if (baritone.getPathingControlManager().mostRecentInControl().orElse(null) != this) {
+                    System.out.println("ElytraProcess doesn't have control!");
+                }
                 if (ctx.player().position().y < endPos.y - LANDING_COLUMN_HEIGHT) {
                     logDirect("bad landing spot, trying again...");
                     landingSpotIsBad(endPos);
@@ -196,7 +191,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             IPathExecutor executor = baritone.getPathingBehavior().getCurrent();
             BetterBlockPos target = null;
 
-            // Get the next path node from the current executor
+            // Get the next path node
             if (executor != null && executor.getPath() != null) {
                 List<BetterBlockPos> positions = executor.getPath().positions();
                 int currentIndex = executor.getPosition();
@@ -208,35 +203,33 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                 }
             }
 
-            // If we have a target, calculate and apply look rotation
-            if (target != null) {
+            // 🧠 Auto pitch & single key press logic
+            baritone.getInputOverrideHandler().clearAllKeys(); // clear all first
+
+            if (baritone.getPathingControlManager().mostRecentInControl().orElse(null) == this) {
                 Vec3 from = ctx.player().position();
                 Vec3 to = new Vec3(target.getX() + 0.5, target.getY() + 0.5, target.getZ() + 0.5);
                 Rotation rotation = RotationUtils.calcRotationFromVec3d(from, to, ctx.playerRotations());
 
                 baritone.getLookBehavior().updateTarget(rotation, false);
 
-                // Determine pitch direction for Elytra control
                 float pitch = rotation.getPitch();
-                boolean pressingJump = Minecraft.getInstance().options.keyJump.isDown();
-                boolean pressingSneak = Minecraft.getInstance().options.keyShift.isDown();
 
-                if (!pressingJump && !pressingSneak) {
-                    if (pitch > 10) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
-                    } else if (pitch < -10) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-                    } else {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-                    }
+                if (pitch > 10) {
+                    // Going up
+                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                } else if (pitch < -10) {
+                    // Going down
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+                } else {
+                    // Going forward
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 }
+            } else {
+                logDirect("Not in control — skipping vertical input.");
             }
 
-            // Always press forward
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+
 
             float pitch = 0;
             if (behavior != null && behavior.pathManager != null && behavior.pathManager.path != null) {
@@ -250,6 +243,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             }
 
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+
         } else if (this.state == State.LANDING) {
             if (ctx.playerMotion().multiply(1, 0, 1).length() > 0.001) {
                 logDirect("Landed, but still moving, waiting for velocity to die down... ");
@@ -257,7 +251,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             logDirect("Done :)");
-            baritone.getInputOverrideHandler().clearAllKeys();
+           // baritone.getInputOverrideHandler().clearAllKeys();
             this.onLostControl();
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -422,7 +416,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         ItemStack chest = ctx.player().getItemBySlot(EquipmentSlot.CHEST);
         if (chest.getItem() != Items.ELYTRA || chest.getMaxDamage() - chest.getDamageValue() < Baritone.settings().elytraMinimumDurability.value) {
             // elytrabehavior replaces when durability <= minimumDurability, so if durability < minimumDurability then we can reasonably assume that the elytra will soon be broken without replacement
-            return true;
+            return false;
         }
 
         NonNullList<ItemStack> inv = ctx.player().getInventory().items;
@@ -433,7 +427,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             }
         }
         if (qty <= Baritone.settings().elytraMinFireworksBeforeLanding.value) {
-            return true;
+            return false;
         }
         return false;
     }
